@@ -37,30 +37,6 @@ double poolTemp = 0.0;
 int poolLevel = 0;
 int checkinTime =  -1;
 
-// Valve Flag Variables
-char cFlag = 0;
-
-// Variables to track valve position
-int valveposition = 0;
-bool aeratorautorun = false;
-
-//  Variables for Pool Light
-char ccFlag = 0;
-int lightposition = 11;
-int changecycles = 0;
-int delayamount = 800;  //delay amounnt in ms to achieve smooth pool light color change
-bool ontime45 = true;
-bool offtime45 = true;
-bool weirdway = false;
-int tlightchangedon = (Time.now() - 65);
-int tlightchangedoff = (Time.now() - 65);
-
-//  Variables for chemical pumps
-int Cdailyruntime = 0;
-int Adailyruntime = 0;
-int Cmanualruntime = 0;
-int Amanualruntime = 0;
-
 // Time Variables for scheduling
 int month = 13;
 int hour = 25;
@@ -100,27 +76,7 @@ cloudconnected = true;
   pinMode(pPumpRelay1, OUTPUT); 
   pinMode(pPumpRelay2, OUTPUT); 
   pinMode(pPumpRelay3, OUTPUT); 
-// Set Valve Pins to Outputs
-  pinMode(aeratoronrelay, OUTPUT);
-  pinMode(ccwvalverelay, OUTPUT);
-  pinMode(cwvalverelay, OUTPUT);
-// set light pin to outputs  
-  pinMode(poollight, OUTPUT);
-// Set chemical Pins to Outputs
-  pinMode(chlorinerelay, OUTPUT);
-  pinMode(acidrelay, OUTPUT);
-// Set valve and light relays to defualt state
-  digitalWrite(aeratoronrelay, HIGH);
-  digitalWrite(ccwvalverelay, HIGH);
-  digitalWrite(cwvalverelay, HIGH); 
-  digitalWrite(poollight, HIGH);
-// Default Pump Relays to Off
-  digitalWrite(pPumpRelay1, HIGH);
-  digitalWrite(pPumpRelay2, HIGH);
-  digitalWrite(pPumpRelay3, HIGH);
-// Default chemical relay positions to off
-  digitalWrite(chlorinerelay, HIGH);
-  digitalWrite(acidrelay, LOW); // reversed
+
 // Register Cloud Functions for Pump
   Particle.function("PumpSpeed", SetSpeed);
   Particle.function("automode", automodefunc);
@@ -130,27 +86,8 @@ cloudconnected = true;
 // Register Cloud Functions for valves
   Particle.function("valves", valvefunc);
   Particle.variable("valvepos", valveposition);
-// subscribe to and publish temp & levelchanges
-  Particle.subscribe("CurrentTemperature", tempHandler, MY_DEVICES);
-  Particle.subscribe("waterlevel", levelHandler, MY_DEVICES);
-  Particle.variable("PoolTemp", poolTemp);
-  Particle.variable("PoolLevel", poolLevel);
 //** register cloud functions for temp  
   Particle.variable("OAT", ioat);
-// Cloud Functions For Pool Light
-  Particle.function("poollight", poollightfunc);
-  Particle.function("colorchange", colorchangefunc);
-//  Cloud Functions FOr Chemical Pumps
-  Particle.function("chlorinePump", chlorinePumpfunc);
-  Particle.function("acidPump", acidPumpfunc);
-  Particle.function("Cdaily", Cdaily);
-  Particle.function("Aciddaily", Adaily);
-  Particle.function("Cmanual", Cmanual);
-  Particle.function("Amanual",Amanual);
-  Particle.variable("ChlorDaily", Cdailyruntime);
-  Particle.variable("AcidDaily", Adailyruntime);
-  Particle.variable("ChlorManual", Cmanualruntime);
-  Particle.variable("AcidManual", Amanualruntime);
 // Cloud Variable for RSSI
   Particle.variable("RSSI", rssi);
 
@@ -160,11 +97,6 @@ cloudconnected = true;
   digitalWrite(tempPower, HIGH);
   digitalWrite(tempGround, LOW);
 
-// start valve position at cleaner off so easier to track  
-  mainsOn(); // default mains on
-  Particle.publish("cleaners", "off", PRIVATE); // let smartthings know to update valve position
-  resumeschedule();
-}
 
 void loop() {
 // check if Im connected
@@ -219,78 +151,6 @@ if (cloudconnected == false && tsinceDisc >= 30){
     rssi = WiFi.RSSI();
   }
   
-  // check if light position is the same for 45 seconds for sync planning
-  int lightstatus = digitalRead(poollight);
-  int nowutc = Time.now(); // track if it has been on or off for at least 45 seconds
-  if (((nowutc - tlightchangedon) > 45) && lightstatus == LOW){
-    ontime45 = true; 
-  }
-  if ((nowutc - tlightchangedon) < 45){
-    ontime45 = false;
-  }
-  if (((nowutc - tlightchangedoff) > 45) && lightstatus == HIGH){
-    offtime45 = true;
-  }
-  if ((nowutc - tlightchangedoff) < 45) {
-    offtime45 = false;
-  }
-  
-  // Valve loop Code checks for valve flags set from the cloud function and runs the appropriate function to avoid cloud response delays
- 
-  if (cFlag == 1)
-  {
-    cFlag = 0;
-    mainsOn();
-  }
-  if (cFlag == 2)
-  {
-    cFlag = 0;
-    cleanersOn();
-  }
-  if (cFlag == 3)
-  {
-    cFlag = 0;
-    aeratorOn();
-  }
-  
-  // Pool Light Loop Code checks for valve flags set from the cloud function and runs the appropriate function to avoid cloud response delays
-  if (ccFlag == 1)  // color cycle button cycles one spot
-  {
-    int next = (lightposition + 1);
-    if (next > 15){
-    next = 1;
-    }
-    colorChange(next);
-  }
-  if (ccFlag == 2)  // red
-  {
-    colorChange(9);
-  }
-  if (ccFlag == 3) // green
-  {
-    colorChange(10);
-  }
-  if (ccFlag == 4) // blue
-  {
-    colorChange(11);
-  }
-  if (ccFlag == 5) // yellow
-  {
-    colorChange(12);
-  }
-  if (ccFlag == 6) // skyblue
-  {
-    colorChange(13);
-  }
-  if (ccFlag == 7) // magenta
-  {
-    colorChange(14);
-  }
-  if (ccFlag == 8) // white
-  {
-    colorChange(15);
-  }
-
  // Auto mode selected flag to avoid cloud delays
  if (autoFlag == true)
  {
@@ -383,61 +243,8 @@ byte i;
   ioat = atoi(oat);
   tLast = Time.local() % 86400;
 }
-// aerator on function
-void aeratorOn() {   // wont turn on without turning down pump to avoid damage to pipes and alerts smartthings to refresh
-    if (pumpSetting >= 5){  
-        SetSpeed("3");
-        if (cloudconnected == true){
-        Particle.publish("wattchange", "true", PRIVATE);
-        }
-        delay(5000); // give pump time to react before valves move
-    }
-    digitalWrite(aeratoronrelay, LOW);
-    if (valveposition == 1){
-       digitalWrite(cwvalverelay, HIGH);
-       digitalWrite(ccwvalverelay, LOW);
-       delay(35000);
-       digitalWrite(ccwvalverelay, HIGH);
-    }
-    if (valveposition == 2){
-       digitalWrite(cwvalverelay, HIGH);
-       digitalWrite(ccwvalverelay, LOW);
-       delay(18000);
-       digitalWrite(ccwvalverelay, HIGH);
-    }
-    if (valveposition == 3){
-        //do nothing
-    }
-    valveposition = 3;
-    wattchange();   // recalculate pump power
-}
 
-// mains on function
-void mainsOn() {
-    if (valveposition == 0){
-        digitalWrite(cwvalverelay, LOW);
-        delay(35000);
-        digitalWrite(cwvalverelay, HIGH);
-    }
-    if (valveposition ==1){
-        // do nothing
-    }
-    if (valveposition == 2){
-        digitalWrite(ccwvalverelay, HIGH); // shutoff opposite motor just in case
-        digitalWrite(cwvalverelay, LOW);  // activate motor
-        delay(18000);                     // run for x seconds and shutoff
-        digitalWrite(cwvalverelay, HIGH);
-    }
-    if (valveposition == 3){
-        digitalWrite(ccwvalverelay, HIGH); // shutoff opposite motor just in case
-        digitalWrite(cwvalverelay, LOW);  // activate motor
-        delay(35000);                     // run for x seconds and shutoff
-        digitalWrite(cwvalverelay, HIGH);
-    }
-    digitalWrite(aeratoronrelay, HIGH);   // shut off aerator if its running
-    valveposition = 1;  // update stored valve position
-    wattchange();   // recalculate pump power
-}    
+
     
 // cleaner on function
 void cleanersOn() {
@@ -460,61 +267,6 @@ void cleanersOn() {
     valveposition = 2;  // update stored valve position
     wattchange();                        // Recalculate Power Consumption for valve position
 
-}
-
-
-// Pool color selection
-void colorChange(int desired){
-ccFlag = 0;
-int count = 0;
-int lightstatus = digitalRead(poollight);
-
-
-if ((desired - lightposition) >= 0)  // calculate cycles required to get there
-   {
-       changecycles = (desired - lightposition);
-   }
-else{
-       changecycles = ((16 - lightposition) + desired);
-   }
-
-if(ontime45 == true && lightstatus == LOW && weirdway == false){  // if the on time in one position has been greater than 45 seconds it has a different cycle
-    changecycles = desired - 6;
-    weirdway = false;
-}
-
-if (offtime45 == true && ontime45 == true && changecycles == 0 && lightstatus == HIGH){  // if its been on and off for the required time and same color is selected turning on once resumes color
-    digitalWrite(poollight, LOW);
-    weirdway = true;
-}
-if (offtime45 == true && ontime45 == true && changecycles >= 1 && lightstatus == HIGH ){ // if its been on and off for the required time it changes the cycle schedule to get to desired light
-    changecycles = desired - 6;
-    weirdway = false;
-}
-if (weirdway == true && changecycles >= 1 && lightstatus == LOW){  // if it was turned on to the same color and then a different color is selected the cycles change
-    changecycles = desired - 6;
-    weirdway = false;
-}
-
-while (changecycles != count){  // loops to achieve the right color
-    digitalWrite(poollight, HIGH);
-    delay(delayamount);
-    digitalWrite(poollight, LOW);
-    count++;
-    delay(delayamount);
-    }
-count = 0;
-changecycles = 0;
-lightposition = desired;
-ontime45 = false;
-offtime45 = false;
-tlightchangedon = Time.now();
-tlightchangedoff = Time.now();
-
-
-if (cloudconnected == true){     // tell smartthings the pool light is on
-    Particle.publish("plight", "on", PRIVATE);
-    }
 }
 
 // runs if valve changes to update pump power use
@@ -593,122 +345,6 @@ char Apumpstate = digitalRead(acidrelay);
 // chlorine pump auto schedule
 //
 
-// Addition 1 at 8:05 am
-if (Cpumpstate == HIGH && Apumpstate == LOW && hour == 8 && minute == 5 && automode == true && Cdailyruntime > 0){
-    if ( valveposition != 1 or pumpSpeed == 0 or pumpSpeed > 2000){
-      if (valveposition != 1){
-      mainsOn();
-      }
-      if (pumpSpeed == 0 or pumpSpeed > 2000){
-      SetSpeed("2");
-      }
-      if (cloudconnected == true){
-      Particle.publish("refresh", "true", PRIVATE);
-      }
-    }
-    digitalWrite(chlorinerelay, LOW);
-    secCoff = (cursec + (((Cdailyruntime * 60)) / 3));    // calculates the time to trigger shutoff assuming 3 additions to hit the daily value
-    if (cloudconnected == true){
-    Particle.publish("chlorineon", "true", PRIVATE);
-    }
-}
-// Addition 2 at 2:30 pm
-if (Cpumpstate == HIGH && Apumpstate == LOW && hour == 14 && minute == 30 && automode == true && Cdailyruntime > 0){
-    if ( valveposition != 1 or pumpSpeed == 0 or pumpSpeed > 2000){
-      if (valveposition != 1){
-      mainsOn();
-      }
-      if (pumpSpeed == 0 or pumpSpeed > 2000){
-      SetSpeed("2");
-      }
-      if (cloudconnected == true){
-      Particle.publish("refresh", "true", PRIVATE);
-      }
-    }
-    digitalWrite(chlorinerelay, LOW);
-    secCoff = (cursec + (((Cdailyruntime * 60)) / 3));    // calculates the time to trigger shutoff assuming 3 additions to hit the daily value
-    if (cloudconnected == true){
-    Particle.publish("chlorineon", "true", PRIVATE);
-    }
-}
-// Addition 3 at 10:00 pm
-if (Cpumpstate == HIGH && Apumpstate == LOW && hour == 22 && minute == 0 && automode == true && Cdailyruntime > 0){
-    if ( valveposition != 1 or pumpSpeed == 0 or pumpSpeed > 2000){
-      if (valveposition != 1){
-      mainsOn();
-      }
-      if (pumpSpeed == 0 or pumpSpeed > 2000){
-      SetSpeed("2");
-      }
-      if (cloudconnected == true){
-      Particle.publish("refresh", "true", PRIVATE);
-      }
-    }
-    digitalWrite(chlorinerelay, LOW);
-    secCoff = (cursec + (((Cdailyruntime * 60)) / 3));    // calculates the time to trigger shutoff assuming 3 additions to hit the daily value
-    if (cloudconnected == true){
-    Particle.publish("chlorineon", "true", PRIVATE);
-    }
-}
-// Turns off chlorine relay after set time if it was turned on automatically
-if (Cpumpstate == LOW && cursec >= secCoff){
-    digitalWrite(chlorinerelay, HIGH);
-    if (cloudconnected == true){
-    Particle.publish("chlorineoff", "true", PRIVATE);
-    }
-}
-
-//
-// acid pump auto schedule
-//
-
-// Addition 1 at 9:00 am
-if (Apumpstate == LOW && Cpumpstate == HIGH && hour == 9 && minute == 0 && automode == true && Adailyruntime > 0){
-    if ( valveposition != 1 or pumpSpeed == 0 or pumpSpeed > 2000){
-      if (valveposition != 1){
-      mainsOn();
-      }
-      if (pumpSpeed == 0 or pumpSpeed > 2000){
-      SetSpeed("2");
-      }
-      if (cloudconnected == true){
-      Particle.publish("refresh", "true", PRIVATE);
-      }
-    }
-    digitalWrite(acidrelay, HIGH);
-    secAoff = (cursec + (((Adailyruntime * 60)) / 2));    // calculates the time to trigger shutoff assuming 2 additions per day to hit the daily value
-    if (cloudconnected == true){
-    Particle.publish("acidon", "true", PRIVATE);
-    }
-}
-// Addition 2 at 11:00 pm
-if (Apumpstate == LOW && Cpumpstate == HIGH && hour == 23 && minute == 0 && automode == true && Adailyruntime > 0){
-    if ( valveposition != 1 or pumpSpeed == 0 or pumpSpeed > 2000){
-      if (valveposition != 1){
-      mainsOn();
-      }
-      if (pumpSpeed == 0 or pumpSpeed > 2000){
-      SetSpeed("2");
-      }
-      if (cloudconnected == true){
-      Particle.publish("refresh", "true", PRIVATE);
-      }
-    }
-    digitalWrite(acidrelay, HIGH);
-    secAoff = (cursec + (((Adailyruntime * 60)) / 2));    // calculates the time to trigger shutoff assuming 2 additions per day to hit the daily value
-    if (cloudconnected == true){
-    Particle.publish("acidon", "true", PRIVATE);
-    }
-}
-// Turns off acid relay after set time if it was turned on automatically
-if (Apumpstate == HIGH && cursec >= secAoff){
-    digitalWrite(acidrelay, LOW);
-    if (cloudconnected == true){
-    Particle.publish("acidoff", "true", PRIVATE);
-    }
-}
-
-
 //
 // pump and valve auto runs
 //
@@ -783,17 +419,6 @@ if (hour == 1 && minute == 0 && minutechange == true && automode == true){
     }
     }
 }
-
-// pool temp cools below 84 shut aerator off
-if (valveposition == 3 && poolTemp <= 84 && aeratorautorun == true){
-    mainsOn();
-    SetSpeed("2");
-    aeratorautorun = false;
-    if (cloudconnected == true){
-    Particle.publish("refresh", "true", PRIVATE);
-    }
-}
-
 //
 // update the clock once a day
 //
@@ -1009,190 +634,6 @@ int SetSpeed(String command)
       return 9;
     }
 }
-
-
-// 3 way valve cloud function
-int valvefunc(String command)
-{
-  cFlag = atoi(command);   //set the flag to the command
-  return cFlag;
-}
-
-// Pool Light Cloud Functions
-int poollightfunc(String command)
-{
-// cloud trigger for pool light on
-int light = digitalRead(poollight); // check state
-  if (command == "1")
-    {
-      if (light == HIGH){
-      digitalWrite(poollight, LOW);
-      tlightchangedon = Time.now();
-      if (ontime45 == true){
-        weirdway = true;
-      }
-      }
-      if (light == LOW){
-      }
-      return 1;
-    }
- 
-// cloud command light off  
-  else if (command == "0")
-    {
-      if (light == LOW){
-      digitalWrite(poollight, HIGH);
-      tlightchangedoff = Time.now();
-      weirdway = false;
-      }
-      if (light == HIGH){
-      }
-      return 0;
-    }
-// bad command
-  else 
-    {               
-      return 666;
-    }
-}
-int colorchangefunc(String command)
-{
-// cloud trigger for color change
-  if (command == "1") 
-    {   
-      ccFlag = 1;
-      return 1;
-    }
-  if (command == "2") 
-    {   
-      ccFlag = 2;
-      return 2;
-    }
-  if (command == "3") 
-    {   
-      ccFlag = 3;
-      return 3;
-    }
-  if (command == "4") 
-    {   
-      ccFlag = 4;
-      return 4;
-    }
-  if (command == "5") 
-    {   
-      ccFlag = 5;
-      return 5;
-    }
-  if (command == "6") 
-    {   
-      ccFlag = 6;
-      return 6;
-    }
-  if (command == "7") 
-    {   
-      ccFlag = 7;
-      return 7;
-    }
-  if (command == "8") 
-    {   
-      ccFlag = 8;
-      return 8;
-    }
-// cloud trigger for pool light off
-  else 
-    {               
-      ccFlag= 0;
-      return 0;
-    }
-}
-
-// cloud functions for chemical pumps
-int chlorinePumpfunc(String command)
-{
-// cloud trigger for chlorine on
-  if (command == "1") 
-    {   
-      secCoff = 100000; //set autoff to an unabtainable number for pump to run manually
-      digitalWrite(chlorinerelay, LOW);
-      Particle.publish("chlorineon", "true", PRIVATE);
-      return 1;
-    }
-// cloud trigger for chlorine off
-  else 
-    {               
-      digitalWrite(chlorinerelay, HIGH);
-      Particle.publish("chlorineoff", "true", PRIVATE);
-      return 0;
-    }
-}
-int acidPumpfunc(String command)
-{
-// cloud trigger for acid on
-  if (command == "1") 
-    {   
-      secAoff = 100000; // set auto off to an unabtainable number for pump to run manually
-      digitalWrite(acidrelay, HIGH); //reversed
-      Particle.publish("acidon", "true", PRIVATE);
-      return 1;
-    }
-// cloud trigger for acid off
-  else 
-    {               
-       digitalWrite(acidrelay, LOW);
-      Particle.publish("acidoff", "true", PRIVATE);
-      return 0;
-    }
-}
-int Cdaily(String command)
-{
-// cloud trigger for chlorine daily change
-Cdailyruntime = atoi (command);
-       return Cdailyruntime;
-}
-int Adaily(String command)
-{
-// cloud trigger for chlorine daily change
-Adailyruntime = atoi (command);
-       return Adailyruntime;
-}
-int Cmanual(String command)
-{
-// cloud trigger for chlorine daily change
-Cmanualruntime = atoi (command);
-if (Cmanualruntime > 0){
-digitalWrite(chlorinerelay, LOW);
-int cursec = Time.local() % 86400;
-int nextdaychecker = (cursec + (Cmanualruntime * 60));
-    if (nextdaychecker > 86400){
-    secCoff = (nextdaychecker - 86400);
-    }
-    else {
-    secCoff = nextdaychecker;
-    }
-}
-    Particle.publish("chlorineon", "true", PRIVATE);
-    return Cmanualruntime;
-}
-
-int Amanual(String command)
-{
-// cloud trigger for chlorine daily change
-Amanualruntime = atoi (command);
-if (Amanualruntime > 0){
-digitalWrite(acidrelay, HIGH);
-int cursec = Time.local() % 86400;
-int nextdaychecker = (cursec + (Amanualruntime * 60));
-    if (nextdaychecker > 86400){   // check if it rolls into next day to make sure it shuts off
-    secAoff = (nextdaychecker - 86400);
-    }
-    else {
-    secAoff = nextdaychecker;
-    }
-}
-    Particle.publish("acidon", "true", PRIVATE);
-    return Amanualruntime;
-}       
-
 // cloud trigger for auto mode change
 int automodefunc(String command)
 {
@@ -1211,16 +652,3 @@ int automodefunc(String command)
     }
 }
 
-// Temp Handler when subscribed event happens
-void tempHandler(const char *event, const char *data)
-{
-poolTemp = atof(data);
-checkinTime = Time.local() % 86400;   // not using right now but for possible tracking of dead battery on temp level handler
-
-}
-
-// Level Handler when subscribed event happens
-void levelHandler(const char *event, const char *data)
-{
-poolLevel = atoi(data);
-}
