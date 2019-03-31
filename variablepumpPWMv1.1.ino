@@ -5,10 +5,12 @@
 
 //This is bscuderi13's own pool controller and does not incorporate a variable speed pump,
 //but I will upgrade to that later. Instead, I will comment out any mention of variable speeds.
-//I will be using a 10 amp relay to control a 20 amp relay, as the single speed
-//pump draws about 11-15 amps, so as not to burn out my relay board.
+//This version uses PWM to control an Adafruit DRV8871 Motor controller, which in turn drives a Century Pump Vgreen 1.65 pump.
+//5-97% duty cycle at 100 Hz corresponds to 600-3450 RPM.
+//I have also included an Emon power monitor, to better be able to monitor power consumption accurately.
+//So far, power, voltage and current are working well.
 //******Temperature Monitoring and Control******
-//I am using a NCI.IO 4 channel 4-20 mA input
+
 
 // This #include statement was automatically added by the Particle IDE.
 
