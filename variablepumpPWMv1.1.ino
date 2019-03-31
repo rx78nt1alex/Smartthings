@@ -1,23 +1,47 @@
 // This #include statement was automatically added by the Particle IDE.
-#include <OneWire.h>  //For Temp Sensor include this library
+#include <EmonLib.h>
+
+
+
+//This is bscuderi13's own pool controller and does not incorporate a variable speed pump,
+//but I will upgrade to that later. Instead, I will comment out any mention of variable speeds.
+//I will be using a 10 amp relay to control a 20 amp relay, as the single speed
+//pump draws about 11-15 amps, so as not to burn out my relay board.
+//******Temperature Monitoring and Control******
+//I am using a NCI.IO 4 channel 4-20 mA input
+
+// This #include statement was automatically added by the Particle IDE.
+
+#include <OneWire.h>        //For Temp Sensor
+
+
+EnergyMonitor emon1;             // Create an instance
+
 
 STARTUP(WiFi.selectAntenna(ANT_EXTERNAL)); // Use external antenna
 SYSTEM_MODE(SEMI_AUTOMATIC);    // take control of the wifi behavior to avoid cloud bogging down local functions
 SYSTEM_THREAD(ENABLED);    // enable so loop and setup run immediately as well as allows wait for to work properly for the timeout of wifi
 
 
-// define pin names for easier reference in the code
-#define pPumpRelay1     D4
-#define pPumpRelay2     D5
-#define pPumpRelay3     D6
-#define tempPower       A0
-#define tempGround      A1
-#define chlorinerelay   D0
-#define aeratoronrelay  D1
-#define ccwvalverelay   D2
-#define cwvalverelay    D3
-#define poollight       D7
-#define acidrelay       A3    // remember this relay is a high input on and is a seperate relay
+
+// pins D0 and D1 cannot be used for relay control due to being the I2C comm pins
+//When I add pH, ORP, and conductivity, they are I2C devices and may be 
+//piggybacked onto the PSCREW screw terminals to communicate with, which uses D0 and D1.
+//Direct Photon Relay control
+int pPumpSpdpwm  = RX;
+//int pPumpSpeedLo = D5; Since this is PWM, low can be connected to ground with the Adafruit DRV8871
+int pCleaner     = D4;
+
+
+#define cleaneronrelay  D2
+#define cleaneroffrelay D3
+
+
+
+//Temperature pins
+int tempPower  = A2;
+int tempGround = A3;
+
 
 // Pump Speed Variables
 int pumpSetting = 0;
@@ -25,17 +49,25 @@ int pumpSpeed = 0;
 int pumpPowerConsumption = 0;
 int totalKWH = 0;
 
+unsigned long lastRequest  = 0;
+
 //** temp variables
-OneWire ds = OneWire(A2);  //** 1-wire signal on pin A2
+OneWire ds = OneWire(A4);  //** 1-wire signal on pin A4
+byte addrs[2][8] = {{0x28, 0xFF, 0xAD, 0x64, 0xB1, 0X17, 0x5, 0xA3}, {0x28, 0xFF, 0xD8, 0x0F, 0xB2, 0x17, 0x5, 0xFC}};
+//Since it is a 1 wire system and multiples can be used, more than one can be put on the same pin
 unsigned long lastUpdate = 0;
 float lastTemp;
 int tLast = -1;
 int ioat = -777;
+//int hour = Time.hour();
 
-// Pool Temp & Level Variables
-double poolTemp = 0.0;
-int poolLevel = 0;
-int checkinTime =  -1;
+
+
+  double realPower       = emon1.realPower;        //extract Real Power into variable
+  double apparentPwr   = emon1.apparentPower;    //extract Apparent Power into variable
+  double pwerFactor     = emon1.powerFactor;      //extract Power Factor into Variable
+  double supplyVolts   = emon1.Vrms;             //extract Vrms into Variable
+  double Irms            = emon1.Irms;             //extract Irms into Variable
 
 // Time Variables for scheduling
 int month = 13;
@@ -64,102 +96,93 @@ int discTime = -1;
 int discUTC = -1;
 int rssi = 0;
 
-void setup() {
-Particle.connect();    // attempt to connect to the cloud
-waitFor(Particle.connected, 30000); // allow 30 seconds to conncect
-if (Particle.connected()){   // check if connection is true than set the variable to true
-cloudconnected = true;
-}
-// Set Timezone
-  Time.zone(-7);
-// Set Pump Pins to Outputs
-  pinMode(pPumpRelay1, OUTPUT); 
-  pinMode(pPumpRelay2, OUTPUT); 
-  pinMode(pPumpRelay3, OUTPUT); 
 
+
+
+
+
+void setup() {
+    Wire.setSpeed(400000);
+    Wire.begin();   
+    Serial.begin(9600);
+    
+    
+    Particle.connect();    // attempt to connect to the cloud
+    waitFor(Particle.connected, 30000); // allow 30 seconds to conncect
+    if (Particle.connected()){   // check if connection is true than set the variable to true
+    cloudconnected = true;
+    }
+    
+// Set Timezone
+  Time.zone(-5);
+    emon1.voltage(3, 184.986, 1);  // Voltage: input pin, calibration, phase_shift
+    emon1.current(1, 17.90);       // Current: input pin, calibration.
+
+
+// Set Pump Pins to Outputs
+    pinMode(pPumpSpdpwm, OUTPUT);     // sets the pin as output
+        analogWriteResolution(pPumpSpdpwm, 12); // sets analogWrite resolution to 12 bits
+    //pinMode(pPumpRelay2, OUTPUT); 
+    //pinMode(pPumpRelay3, OUTPUT); 
+    
 // Register Cloud Functions for Pump
-  Particle.function("PumpSpeed", SetSpeed);
-  Particle.function("automode", automodefunc);
-  Particle.variable("PumpRPM", pumpSpeed);
-  Particle.variable("PowerUse", pumpPowerConsumption);
-  Particle.variable("TotalKWH", totalKWH);
+    Particle.function("PumpSpeed", SetSpeed);
+    Particle.function("automode", automodefunc);
+    Particle.variable("PumpRPM", pumpSpeed);
+    Particle.variable("PowerUse", realPower);
+    Particle.variable("TotalKWH", totalKWH);
+    Particle.variable("RSSI", rssi);
 // Register Cloud Functions for valves
-  Particle.function("valves", valvefunc);
-  Particle.variable("valvepos", valveposition);
+ //   Particle.function("aerator", aeratorfunc);
+ //   Particle.function("floorcleaner", cleanerfunc);
+// subscribe to and publish temp & levelchanges
+ //   Particle.subscribe("CurrentTemperature", tempHandler, MY_DEVICES);
+ //   Particle.subscribe("waterlevel", levelHandler, MY_DEVICES);
+ //   Particle.variable("PoolTemp", poolTemp);
+ //   Particle.variable("PoolLevel", poolLevel);
 //** register cloud functions for temp  
-  Particle.variable("OAT", ioat);
-// Cloud Variable for RSSI
-  Particle.variable("RSSI", rssi);
+    Particle.variable("OAT", ioat);
 
 //** temp pin setup
-  pinMode(tempPower, OUTPUT); //** power temp sensor
-  pinMode(tempGround, OUTPUT); //** ground temp sensor
-  digitalWrite(tempPower, HIGH);
-  digitalWrite(tempGround, LOW);
+    pinMode(tempPower, OUTPUT); //** power temp sensor
+    pinMode(tempGround, OUTPUT); //** ground temp sensor
+    digitalWrite(tempPower, HIGH);
+    digitalWrite(tempGround, LOW);
 
+// start valve position at cleaner on so easier to track  
+//  cleanerOn(); // go on first to hit valve limit switch
+//  cleanerOff(); // then go back to default to off
+  //aeratorOff(); // start default aerator off
+// let smartthings know to update valve position
+}
+
+// get a temp reading
 
 void loop() {
-// check if Im connected
-if (!Particle.connected() && cloudconnected == true){   // check once a loop for a disconnect if its not connected and the variable says it is
-  Particle.connect();  // try and connect
-  if(!waitFor(Particle.connected, 7000)){   // if it takes longer than 7 seconds run disconnect and move on but schedule a re connect attempt
-  Particle.disconnect();
-  cloudconnected = false;
-  discTime = Time.local() % 86400;  // note the disconnect time
-  discUTC = Time.now();  // note the time from utc to easily schedule reattempt
-  }
-  if (Particle.connected()){    // if the reconnect attempt worked change the variable
-  cloudconnected = true;
-  Particle.publish("cloudreconnect", String(discTime), PRIVATE); // let me know it went down and had to reconnect this way
-  Particle.publish("refresh", "true", PRIVATE); // refresh all the shit too 
-  rssi = WiFi.RSSI();
-  }
-}
-
-// scheduled reconnects
-int curSec = Time.now();
-int tsinceDisc = (curSec - discUTC);
- 
-if (cloudconnected == false && tsinceDisc >= 30){
-   Particle.connect();
-   if(!waitFor(Particle.connected, 7000)){   // if it takes longer than 7 seconds run disconnect and move on but schedule a re connect attempt
-   Particle.disconnect();
-   cloudconnected = false;
-   discUTC = Time.now(); // restart the counter for a recheck but leave the second of the day timestamp alone for accurate tracking
-   }
-   if (Particle.connected()){    // if the reconnect attempt worked change the variable
-   cloudconnected = true;
-   Particle.publish("cloudreconnect", String(discTime), PRIVATE); // let me know it went down and had to reconnect this way
-   Particle.publish("refresh", "true", PRIVATE); // refresh all the shit too 
-  }
+   emon1.calcVI(20,2000);         // Calculate all. No.of half wavelengths (crossings), time-out
+   emon1.serialprint();           // Print out all variables (realpower, apparent power, Vrms, Irms, power factor)
+   double realPower       = emon1.realPower;        //extract Real Power into variable
+   double apparentPwr   = emon1.apparentPower;    //extract Apparent Power into variable
+   double pwerFactor     = emon1.powerFactor;      //extract Power Factor into Variable
+   double supplyVolts   = emon1.Vrms;             //extract Vrms into Variable
+   double Irms            = emon1.Irms;  
    
+   Particle.variable("RMS Volts", supplyVolts);  // This is what exposes the funtion to the internet!
+   Particle.variable("RMS Current", Irms);  // NOTE: Variable names can only be a max of twelve characters!
+ 
+   Particle.variable("App Power", apparentPwr);
+   Particle.variable("Pwr Factor", pwerFactor);
+   
+   
+   
+   Particle.publish("RMS Volts", String(supplyVolts));  // This is what exposes the funtion to the internet!
+   Particle.publish("RMS Current", String(Irms));  // NOTE: Variable names can only be a max of twelve characters!
+   Particle.publish("Real Power", String(realPower));
+   Particle.publish("App Power", String(apparentPwr));
+   Particle.publish("Pwr Factor", String(pwerFactor));
+    
+   delay(10000);
 }
-
-  // check time for schedul based functions
-  checktime();
-  
-  //** temp loop code checks the time and decides if we need to check outside temp / wifi RSSI
-  int secNow = Time.local() % 86400;  // whats the current second of the day
-  int tSince = (secNow - tLast);
-  if (tSince < 0)                      // correct for 24 hour time clock
-  {
-    tSince = ((86400 - tLast) + secNow);
-  }
-  if (tSince >= 600 or tLast == -1)   // run every ten minutes or first boot
-  {
-    getOAT();
-    rssi = WiFi.RSSI();
-  }
-  
- // Auto mode selected flag to avoid cloud delays
- if (autoFlag == true)
- {
-    resumeschedule();
- }
-
-}
-
-// get a temp reading from the probe
 void getOAT() {
 byte i;
   byte present = 0;
@@ -237,97 +260,15 @@ byte i;
   fahrenheit = celsius * 1.8 + 32.0;
   lastTemp = celsius;
   String oat = String(fahrenheit);
-  if (cloudconnected == true){
   Particle.publish("OAT", oat, PRIVATE);
-  }
   ioat = atoi(oat);
   tLast = Time.local() % 86400;
 }
-
-
-    
-// cleaner on function
-void cleanersOn() {
-    if (valveposition == 1){
-        digitalWrite(cwvalverelay, HIGH);
-        digitalWrite(ccwvalverelay, LOW);
-        delay(17500);
-        digitalWrite(ccwvalverelay, HIGH);
-    }
-    if (valveposition == 2){
-        //do nothing
-    }
-    if (valveposition == 3){
-        digitalWrite(ccwvalverelay, HIGH);
-        digitalWrite(cwvalverelay, LOW);
-        delay(18000);
-        digitalWrite(cwvalverelay, HIGH);
-    }
-    digitalWrite(aeratoronrelay, HIGH);   // shut off aerator if its running
-    valveposition = 2;  // update stored valve position
-    wattchange();                        // Recalculate Power Consumption for valve position
-
-}
-
-// runs if valve changes to update pump power use
-void wattchange() {
-    if (pumpSetting == 6)
-    {
-      if (valveposition == 1)  
-      {
-        pumpPowerConsumption = 972;
-      }
-      else
-      {
-        pumpPowerConsumption = 890; 
-      }
-    }
-    if (pumpSetting == 7)
-    {
-      if (valveposition == 1)
-      {
-        pumpPowerConsumption = 1472;
-      }
-      else
-      {
-        pumpPowerConsumption = 1370; 
-      }
-    }
-    if (pumpSetting == 1){
-        if (valveposition == 3){
-        pumpPowerConsumption = 62;
-        }
-        else{
-        pumpPowerConsumption = 93;
-        }
-    }
-    if (pumpSetting == 2){
-        if (valveposition == 3){
-        pumpPowerConsumption = 92;
-        }
-        else{
-        pumpPowerConsumption = 145;
-        }
-    }
-    if (pumpSetting == 3){
-        if (valveposition == 3){
-        pumpPowerConsumption = 128;
-        }
-        else{
-        pumpPowerConsumption = 200;
-        }
-    }
-    if (cloudconnected == true){
-    Particle.publish("wattchange", "true", PRIVATE);
-    }
-}
-
-// Runs when called upon in loop to check for a regularly scheduled event such as pump speed changes valve changes and chemical pump changes at set times of the day
 void checktime() {
-hour = Time.hour();
-minute = Time.minute();
-month = Time.month();
-day = Time.day();
+    hour = Time.hour();
+    minute = Time.minute();
+    month = Time.month();
+    day = Time.day();
 //check if the minute changed so stuff runs once
 if (minute != previousminute){
     minutechange = true;
@@ -336,26 +277,12 @@ if (minute != previousminute){
 else {
     minutechange = false;
 }
-
 int cursec = Time.local() % 86400;
-char Cpumpstate = digitalRead(chlorinerelay);
-char Apumpstate = digitalRead(acidrelay);
 
-//
-// chlorine pump auto schedule
-//
-
-//
-// pump and valve auto runs
-//
-
-//  6:30 am full speed and floor cleaners  setting 2
-
+//  6:30 am full speed and floor cleaners
 if (hour == 6 && minute == 30 && minutechange == true && automode == true){
-    aeratorautorun = false;
-    cleanersOn();
     SetSpeed("7");
-    if (cloudconnected == true){
+   if (cloudconnected == true){
     Particle.publish("refresh", "true", PRIVATE);
     }
 }
@@ -363,9 +290,8 @@ if (hour == 6 && minute == 30 && minutechange == true && automode == true){
 // 8 am 1500 rpm main returns setting 3
 
 if (hour == 8 && minute == 0 && minutechange == true && automode == true){
-    mainsOn();
     SetSpeed("2");
-    if (cloudconnected == true){
+   if (cloudconnected == true){
     Particle.publish("refresh", "true", PRIVATE);
     }
 }
@@ -382,7 +308,6 @@ if (hour == 15 && minute == 0 && minutechange == true && automode == true && day
 // 8 pm 1500 RPM setting 5
 
 if (hour == 20 && minute == 0 && minutechange == true && automode == true){
-    mainsOn();
     SetSpeed("2");
     if (cloudconnected == true){
     Particle.publish("refresh", "true", PRIVATE);
@@ -392,7 +317,6 @@ if (hour == 20 && minute == 0 && minutechange == true && automode == true){
 //  11:30 pm full speed and floor cleaners setting 6
 
 if (hour == 23 && minute == 30 && minutechange == true && automode == true){
-    cleanersOn();
     SetSpeed("7");
     if (cloudconnected == true){
     Particle.publish("refresh", "true", PRIVATE);
@@ -402,23 +326,12 @@ if (hour == 23 && minute == 30 && minutechange == true && automode == true){
 //  1:00 am 1500 rpm or 1750 and aerator depending on pool temp setting 1
 
 if (hour == 1 && minute == 0 && minutechange == true && automode == true){
-    if (poolTemp < 86){ // dont run aerator if pool is cold
-      mainsOn();
       SetSpeed("2");
       if (cloudconnected == true){
       Particle.publish("refresh", "true", PRIVATE);
       }
     }
-    if (poolTemp >= 86){ // do run aerator if pool is warm
-    SetSpeed("3");
-    delay(5000); // give pump time to react before valves move
-    aeratorOn();
-    aeratorautorun = true;
-    if (cloudconnected == true){
-    Particle.publish("refresh", "true", PRIVATE);
-    }
-    }
-}
+   
 //
 // update the clock once a day
 //
@@ -434,36 +347,15 @@ daylasttimesync = day;
 void resumeschedule() {
 autoFlag = false; // reset the flag to avoid it running every loop
 int checkT = Time.local() % 86400;
-if (checkT >= setting1 && checkT < setting2){  // check setting 1
-
-    if (poolTemp < 86){ // dont run aerator if pool is cold
-      mainsOn();
-      SetSpeed("2");
-      if (cloudconnected == true){
-      Particle.publish("refresh", "true", PRIVATE);
-      }
-    }
-    if (poolTemp >= 86){ // do run aerator if pool is warm
-    SetSpeed("3");
-    delay(5000); // give pump time to react before valves move
-    aeratorOn();
-    aeratorautorun = true;
-      if (cloudconnected == true){
-      Particle.publish("refresh", "true", PRIVATE);
-      }
-    }
-}
 
 if (checkT >= setting2 && checkT < setting3){   // check setting 2
-    aeratorautorun = false;
-    cleanersOn();
+   
     SetSpeed("7");
     if (cloudconnected == true){
     Particle.publish("refresh", "true", PRIVATE);
     }
 }
 if (checkT >= setting3 && checkT < setting4){   // check setting 3
-    mainsOn();
     SetSpeed("2");
     if (cloudconnected == true){
     Particle.publish("refresh", "true", PRIVATE);
@@ -478,7 +370,6 @@ if (checkT >= setting4 && checkT < setting5){   // check setting 4
       }
     }
     else {
-    mainsOn();
     SetSpeed("2");
       if (cloudconnected == true){
       Particle.publish("refresh", "true", PRIVATE);
@@ -486,14 +377,12 @@ if (checkT >= setting4 && checkT < setting5){   // check setting 4
     }
 }
 if (checkT >= setting5 && checkT < setting6){   // check setting 5
-    mainsOn();
     SetSpeed("2");
       if (cloudconnected == true){
     Particle.publish("refresh", "true", PRIVATE);
       }
 }
 if (checkT >= setting6 or checkT < setting1){   // check setting 6
-    cleanersOn();
     SetSpeed("7");
       if (cloudconnected == true){
       Particle.publish("refresh", "true", PRIVATE);
@@ -501,140 +390,96 @@ if (checkT >= setting6 or checkT < setting1){   // check setting 6
 }
 }
 
-
 int SetSpeed(String command)
 {
 // cloud trigger for pool speed
+ double realPower       = emon1.realPower;   
+hour = Time.hour();
+minute = Time.minute();
+month = Time.month();
+day = Time.day();
   if (command == "0") 
     {   
-      digitalWrite(pPumpRelay1, HIGH);
-      digitalWrite(pPumpRelay2, HIGH);
-      digitalWrite(pPumpRelay3, HIGH);
+      analogWrite(pPumpSpdpwm, LOW);
       pumpSetting = 0;
       pumpSpeed = 0;
-      pumpPowerConsumption = 0;
+      Particle.publish("Watts", String(realPower));
+      Particle.publish("Time", Time.timeStr());
       return 0;
     }
   if (command == "1")
    {
-      digitalWrite(pPumpRelay1, LOW);
-      digitalWrite(pPumpRelay2, HIGH);
-      digitalWrite(pPumpRelay3, HIGH);
+      analogWrite(pPumpSpdpwm, 860,0);
       pumpSetting = 1;
       pumpSpeed = 1250;
-      if (valveposition == 1 or valveposition == 2){
-      pumpPowerConsumption = 93;
-      }
-      if (valveposition == 3){
-      pumpPowerConsumption = 62;
-      }    
+      Particle.publish("Watts", String(realPower));
+      Particle.publish("Time", Time.timeStr());
       return 1;
    }
   if (command == "2")
    {
-      digitalWrite(pPumpRelay1, HIGH);
-      digitalWrite(pPumpRelay2, LOW);
-      digitalWrite(pPumpRelay3, HIGH);
+      analogWrite(pPumpSpdpwm, 1190,100);
       pumpSetting = 2;
       pumpSpeed = 1500;
-      if (valveposition == 1 or valveposition == 2){
-      pumpPowerConsumption = 145;
-      }
-      if (valveposition == 3){
-      pumpPowerConsumption = 92;
-      }
+      Particle.publish("Watts", String(realPower));
+      Particle.publish("Time", Time.timeStr());
       return 2;
    }
    if (command == "3")
    {
-      digitalWrite(pPumpRelay1, LOW);
-      digitalWrite(pPumpRelay2, LOW);
-      digitalWrite(pPumpRelay3, HIGH);
+      analogWrite(pPumpSpdpwm, 1520,100);
       pumpSetting = 3;
       pumpSpeed = 1750;
-      if (valveposition == 1 or valveposition == 2){
-      pumpPowerConsumption = 200;
-      }
-      if (valveposition == 3){
-      pumpPowerConsumption = 128;
-      }
+      Particle.publish("Watts", String(realPower));
+      Particle.publish("Time", Time.timeStr());
       return 3;
    }
    if (command == "4")
    {
-      digitalWrite(pPumpRelay1, HIGH);
-      digitalWrite(pPumpRelay2, HIGH);
-      digitalWrite(pPumpRelay3, LOW);
+     analogWrite(pPumpSpdpwm, 1850,100);
       pumpSetting = 4;
       pumpSpeed = 2000;
-      pumpPowerConsumption = 310;
+      Particle.publish("Watts", String(realPower));
+      Particle.publish("Time", Time.timeStr());
        return 4;
    }
    if (command == "5")
    {
-      if (valveposition == 3){
-        mainsOn(); //shutoff aerator first to protect pipes if pump is selected above this speed 
-      }
-      digitalWrite(pPumpRelay1, LOW);
-      digitalWrite(pPumpRelay2, HIGH);
-      digitalWrite(pPumpRelay3, LOW);
+      analogWrite(pPumpSpdpwm, 2511,100);
       pumpSetting = 5;
       pumpSpeed = 2500;
-      pumpPowerConsumption = 570;
+      Particle.publish("Watts", String(realPower));
+      Particle.publish("Time", Time.timeStr());
       return 5;
    }
    if (command == "6")
    {
-       if (valveposition == 3){
-        mainsOn(); //shutoff aerator first to protect pipes if pump is selected above this speed 
-      }
-      digitalWrite(pPumpRelay1, HIGH);
-      digitalWrite(pPumpRelay2, LOW);
-      digitalWrite(pPumpRelay3, LOW);
+     analogWrite(pPumpSpdpwm, 3172,100);
       pumpSetting = 6;
       pumpSpeed = 3000;
-      if (valveposition == 1)   // cleaners off power consumption is higher ill only use cleaners at 3000 oor 3450 rpm
-      {
-        pumpPowerConsumption = 972;
-      }
-      else
-      {
-        pumpPowerConsumption = 890; 
-      }
+      Particle.publish("Watts", String(realPower));
+      Particle.publish("Time", Time.timeStr());
       return 6;
    }
    if (command == "7")
    {
-       if (valveposition == 3){
-        mainsOn(); //shutoff aerator first to protect pipes if pump is selected above this speed 
-      }
-      digitalWrite(pPumpRelay1, LOW);
-      digitalWrite(pPumpRelay2, LOW);
-      digitalWrite(pPumpRelay3, LOW);
+     analogWrite(pPumpSpdpwm, 3972,100);
       pumpSetting = 7;
       pumpSpeed = 3450;
-      if (valveposition == 1)   // cleaners off power consumption is higher ill only use cleaners at 3000 oor 3450 rpm
-      {
-        pumpPowerConsumption = 1472;
-      }
-      else
-      {
-        pumpPowerConsumption = 1370; 
-      }
+      Particle.publish("Watts", String(realPower));
+      Particle.publish("Time", Time.timeStr());
       return 7;
    }
    else  // bad command shutoff pump return 9
     {               
-      digitalWrite(pPumpRelay1, HIGH);
-      digitalWrite(pPumpRelay2, HIGH);
-      digitalWrite(pPumpRelay3, HIGH);
+     analogWrite(pPumpSpdpwm, 0,0);
       pumpSetting = 0;
       pumpSpeed = 0;
-      pumpPowerConsumption = 0;
+      Particle.publish("Watts", String(realPower));
+      Particle.publish("Time", Time.timeStr());
       return 9;
     }
 }
-// cloud trigger for auto mode change
 int automodefunc(String command)
 {
 // cloud trigger for auto mode on    
@@ -651,4 +496,8 @@ int automodefunc(String command)
       return 0;
     }
 }
+
+
+
+
 
