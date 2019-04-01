@@ -1,23 +1,18 @@
 // This #include statement was automatically added by the Particle IDE.
 #include <EmonLib.h>
-
+#include <OneWire.h> 
 
 
 //This is bscuderi13's own pool controller and does not incorporate a variable speed pump,
 //but I will upgrade to that later. Instead, I will comment out any mention of variable speeds.
-//This version uses PWM to control an Adafruit DRV8871 Motor controller, which in turn drives a Century Pump Vgreen 1.65 pump.
-//5-97% duty cycle at 100 Hz corresponds to 600-3450 RPM.
-//I have also included an Emon power monitor, to better be able to monitor power consumption accurately.
-//So far, power, voltage and current are working well.
+//I will be using a 10 amp relay to control a 20 amp relay, as the single speed
+//pump draws about 11-15 amps, so as not to burn out my relay board.
 //******Temperature Monitoring and Control******
+//I am using a NCI.IO 4 channel 4-20 mA input
 
 
-// This #include statement was automatically added by the Particle IDE.
-
-#include <OneWire.h>        //For Temp Sensor
-
-
-EnergyMonitor emon1;             // Create an instance
+OneWire ds = OneWire(D4);       //For Temp Sensor
+EnergyMonitor emon1;            // Create an instance
 
 
 STARTUP(WiFi.selectAntenna(ANT_EXTERNAL)); // Use external antenna
@@ -30,31 +25,23 @@ SYSTEM_THREAD(ENABLED);    // enable so loop and setup run immediately as well a
 //When I add pH, ORP, and conductivity, they are I2C devices and may be 
 //piggybacked onto the PSCREW screw terminals to communicate with, which uses D0 and D1.
 //Direct Photon Relay control
-int pPumpSpdpwm  = RX;
+#define pPumpSpdpwm  RX
 //int pPumpSpeedLo = D5; Since this is PWM, low can be connected to ground with the Adafruit DRV8871
-int pCleaner     = D4;
-
-
-#define cleaneronrelay  D2
-#define cleaneroffrelay D3
-
-
-
-//Temperature pins
-int tempPower  = A2;
-int tempGround = A3;
-
+#define pCleaner     D0
+#define tempPower    D5
+#define tempGround   D3
 
 // Pump Speed Variables
 int pumpSetting = 0;
 int pumpSpeed = 0;
-int pumpPowerConsumption = 0;
+int oat = 0;
+//int pumpPowerConsumption = realPower;
 int totalKWH = 0;
 
 unsigned long lastRequest  = 0;
 
 //** temp variables
-OneWire ds = OneWire(A4);  //** 1-wire signal on pin A4
+//OneWire ds = OneWire(D4);  //** 1-wire signal on pin A4
 byte addrs[2][8] = {{0x28, 0xFF, 0xAD, 0x64, 0xB1, 0X17, 0x5, 0xA3}, {0x28, 0xFF, 0xD8, 0x0F, 0xB2, 0x17, 0x5, 0xFC}};
 //Since it is a 1 wire system and multiples can be used, more than one can be put on the same pin
 unsigned long lastUpdate = 0;
@@ -63,13 +50,11 @@ int tLast = -1;
 int ioat = -777;
 //int hour = Time.hour();
 
-
-
-  double realPower       = emon1.realPower;        //extract Real Power into variable
-  double apparentPwr   = emon1.apparentPower;    //extract Apparent Power into variable
-  double pwerFactor     = emon1.powerFactor;      //extract Power Factor into Variable
-  double supplyVolts   = emon1.Vrms;             //extract Vrms into Variable
-  double Irms            = emon1.Irms;             //extract Irms into Variable
+double realPower       = emon1.realPower;        //extract Real Power into variable
+double apparentPwr   = emon1.apparentPower;    //extract Apparent Power into variable
+double pwerFactor     = emon1.powerFactor;      //extract Power Factor into Variable
+double supplyVolts   = emon1.Vrms;             //extract Vrms into Variable
+double Irms            = emon1.Irms;             //extract Irms into Variable
 
 // Time Variables for scheduling
 int month = 13;
@@ -98,11 +83,6 @@ int discTime = -1;
 int discUTC = -1;
 int rssi = 0;
 
-
-
-
-
-
 void setup() {
     Wire.setSpeed(400000);
     Wire.begin();   
@@ -116,15 +96,16 @@ void setup() {
     }
     
 // Set Timezone
-  Time.zone(-5);
-    emon1.voltage(3, 184.986, 1);  // Voltage: input pin, calibration, phase_shift
+    Time.zone(-5);
+// Set calibration factors for energy monitor
+    emon1.voltage(0, 184.986, 1);  // Voltage: input pin, calibration, phase_shift
     emon1.current(1, 17.90);       // Current: input pin, calibration.
 
 
 // Set Pump Pins to Outputs
     pinMode(pPumpSpdpwm, OUTPUT);     // sets the pin as output
         analogWriteResolution(pPumpSpdpwm, 12); // sets analogWrite resolution to 12 bits
-    //pinMode(pPumpRelay2, OUTPUT); 
+    pinMode(pCleaner, OUTPUT); 
     //pinMode(pPumpRelay3, OUTPUT); 
     
 // Register Cloud Functions for Pump
@@ -133,7 +114,7 @@ void setup() {
     Particle.variable("PumpRPM", pumpSpeed);
     Particle.variable("PowerUse", realPower);
     Particle.variable("TotalKWH", totalKWH);
-    Particle.variable("RSSI", rssi);
+   // Particle.variable("PoolTemp", oat);
 // Register Cloud Functions for valves
  //   Particle.function("aerator", aeratorfunc);
  //   Particle.function("floorcleaner", cleanerfunc);
@@ -143,24 +124,80 @@ void setup() {
  //   Particle.variable("PoolTemp", poolTemp);
  //   Particle.variable("PoolLevel", poolLevel);
 //** register cloud functions for temp  
-    Particle.variable("OAT", ioat);
+     //Particle.variable("WaterTemp", ioat);
+    
+// Cloud Variable for RSSI
+    Particle.variable("RSSI", rssi);
 
 //** temp pin setup
     pinMode(tempPower, OUTPUT); //** power temp sensor
     pinMode(tempGround, OUTPUT); //** ground temp sensor
     digitalWrite(tempPower, HIGH);
     digitalWrite(tempGround, LOW);
+    
+// Set pool cleaner pin to off
+    digitalWrite(pCleaner, HIGH);
 
-// start valve position at cleaner on so easier to track  
-//  cleanerOn(); // go on first to hit valve limit switch
-//  cleanerOff(); // then go back to default to off
-  //aeratorOff(); // start default aerator off
-// let smartthings know to update valve position
 }
 
 // get a temp reading
 
 void loop() {
+   // check if Im connected
+if (!Particle.connected() && cloudconnected == true){   // check once a loop for a disconnect if its not connected and the variable says it is
+  Particle.connect();  // try and connect
+  if(!waitFor(Particle.connected, 7000)){   // if it takes longer than 7 seconds run disconnect and move on but schedule a re connect attempt
+  Particle.disconnect();
+  cloudconnected = false;
+  discTime = Time.local() % 86400;  // note the disconnect time
+  discUTC = Time.now();  // note the time from utc to easily schedule reattempt
+  }
+  if (Particle.connected()){    // if the reconnect attempt worked change the variable
+  cloudconnected = true;
+  Particle.publish("cloudreconnect", String(discTime), PRIVATE); // let me know it went down and had to reconnect this way
+  Particle.publish("refresh", "true", PRIVATE); // refresh all the shit too 
+  rssi = WiFi.RSSI();
+  }
+}
+
+// scheduled reconnects
+int curSec = Time.now();
+int tsinceDisc = (curSec - discUTC);
+ 
+if (cloudconnected == false && tsinceDisc >= 30){
+   Particle.connect();
+   if(!waitFor(Particle.connected, 7000)){   // if it takes longer than 7 seconds run disconnect and move on but schedule a re connect attempt
+   Particle.disconnect();
+   cloudconnected = false;
+   discUTC = Time.now(); // restart the counter for a recheck but leave the second of the day timestamp alone for accurate tracking
+   }
+   if (Particle.connected()){    // if the reconnect attempt worked change the variable
+   cloudconnected = true;
+   Particle.publish("cloudreconnect", String(discTime), PRIVATE); // let me know it went down and had to reconnect this way
+   Particle.publish("refresh", "true", PRIVATE); // refresh all the shit too 
+  }
+   
+}
+
+  // check time for schedul based functions
+  checktime();
+  
+  //** temp loop code checks the time and decides if we need to check outside temp / wifi RSSI
+  int secNow = Time.local() % 86400;  // whats the current second of the day
+  int tSince = (secNow - tLast);
+  if (tSince < 0)                      // correct for 24 hour time clock
+  {
+    tSince = ((86400 - tLast) + secNow);
+  }
+  if (tSince >= 600 or tLast == -1)   // run every ten minutes or first boot
+  {
+    getOAT();
+    
+    
+    rssi = WiFi.RSSI();
+  }
+   
+   
    emon1.calcVI(20,2000);         // Calculate all. No.of half wavelengths (crossings), time-out
    emon1.serialprint();           // Print out all variables (realpower, apparent power, Vrms, Irms, power factor)
    double realPower       = emon1.realPower;        //extract Real Power into variable
@@ -177,21 +214,30 @@ void loop() {
    
    
    
-   Particle.publish("RMS Volts", String(supplyVolts));  // This is what exposes the funtion to the internet!
-   Particle.publish("RMS Current", String(Irms));  // NOTE: Variable names can only be a max of twelve characters!
-   Particle.publish("Real Power", String(realPower));
-   Particle.publish("App Power", String(apparentPwr));
-   Particle.publish("Pwr Factor", String(pwerFactor));
+    Particle.publish("RMS Volts", String(supplyVolts), PRIVATE);  // This is what exposes the funtion to the internet!
+    Particle.publish("RMS Current", String(Irms), PRIVATE);  // NOTE: Variable names can only be a max of twelve characters!
+    Particle.publish("Real Power", String(realPower), PRIVATE);
+    Particle.publish("App Power", String(apparentPwr), PRIVATE);
+    Particle.publish("Pwr Factor", String(pwerFactor), PRIVATE);
+    Particle.publish("Water Temp", String(lastTemp), PRIVATE);
+    Particle.variable("PowerUse", realPower);
+    delay(10000);
     
-   delay(10000);
+    // Auto mode selected flag to avoid cloud delays
+ if (autoFlag == true)
+ {
+    resumeschedule();
+ }
+
 }
+// get a temp reading from the probe
 void getOAT() {
 byte i;
   byte present = 0;
   byte type_s;
   byte data[12];
-  byte addr[8];
-  float celsius, fahrenheit;
+  byte addr[2];
+      float celsius, fahrenheit;
   if ( !ds.search(addr)) {
     ds.reset_search();
     delay(250);
@@ -262,10 +308,15 @@ byte i;
   fahrenheit = celsius * 1.8 + 32.0;
   lastTemp = celsius;
   String oat = String(fahrenheit);
-  Particle.publish("OAT", oat, PRIVATE);
+  if (cloudconnected == true){
+   //Particle.publish("PoolTemp", String(oat), PRIVATE);
+   Particle.variable("PoolTemp", String(oat));
+  }
   ioat = atoi(oat);
   tLast = Time.local() % 86400;
 }
+
+//Particle.variable("OAT", ioat);
 void checktime() {
     hour = Time.hour();
     minute = Time.minute();
@@ -284,6 +335,7 @@ int cursec = Time.local() % 86400;
 //  6:30 am full speed and floor cleaners
 if (hour == 6 && minute == 30 && minutechange == true && automode == true){
     SetSpeed("7");
+    digitalWrite(pCleaner, LOW);
    if (cloudconnected == true){
     Particle.publish("refresh", "true", PRIVATE);
     }
@@ -293,6 +345,7 @@ if (hour == 6 && minute == 30 && minutechange == true && automode == true){
 
 if (hour == 8 && minute == 0 && minutechange == true && automode == true){
     SetSpeed("2");
+    digitalWrite(pCleaner, HIGH);
    if (cloudconnected == true){
     Particle.publish("refresh", "true", PRIVATE);
     }
@@ -320,6 +373,7 @@ if (hour == 20 && minute == 0 && minutechange == true && automode == true){
 
 if (hour == 23 && minute == 30 && minutechange == true && automode == true){
     SetSpeed("7");
+    digitalWrite(pCleaner, LOW);
     if (cloudconnected == true){
     Particle.publish("refresh", "true", PRIVATE);
     }
@@ -329,6 +383,7 @@ if (hour == 23 && minute == 30 && minutechange == true && automode == true){
 
 if (hour == 1 && minute == 0 && minutechange == true && automode == true){
       SetSpeed("2");
+      digitalWrite(pCleaner, HIGH);
       if (cloudconnected == true){
       Particle.publish("refresh", "true", PRIVATE);
       }
@@ -395,8 +450,9 @@ if (checkT >= setting6 or checkT < setting1){   // check setting 6
 int SetSpeed(String command)
 {
 // cloud trigger for pool speed
- double realPower       = emon1.realPower;   
+//double realPower       = emon1.realPower;   
 hour = Time.hour();
+
 minute = Time.minute();
 month = Time.month();
 day = Time.day();
@@ -405,16 +461,17 @@ day = Time.day();
       analogWrite(pPumpSpdpwm, LOW);
       pumpSetting = 0;
       pumpSpeed = 0;
-      Particle.publish("Watts", String(realPower));
+     // Particle.variable("PowerUse", String(realPower), PRIVATE);
       Particle.publish("Time", Time.timeStr());
       return 0;
     }
   if (command == "1")
    {
-      analogWrite(pPumpSpdpwm, 860,0);
+      analogWrite(pPumpSpdpwm, 860,100);
       pumpSetting = 1;
       pumpSpeed = 1250;
-      Particle.publish("Watts", String(realPower));
+      //Particle.variable("PowerUse", String(realPower));
+      //Particle.variable("PumpRPM", pumpSpeed);
       Particle.publish("Time", Time.timeStr());
       return 1;
    }
@@ -423,8 +480,10 @@ day = Time.day();
       analogWrite(pPumpSpdpwm, 1190,100);
       pumpSetting = 2;
       pumpSpeed = 1500;
-      Particle.publish("Watts", String(realPower));
+      //Particle.variable("PowerUse", String(realPower));
+     // Particle.variable("PumpRPM", pumpSpeed);
       Particle.publish("Time", Time.timeStr());
+      //Particle.publish("OAT", String(ioat));
       return 2;
    }
    if (command == "3")
@@ -432,8 +491,10 @@ day = Time.day();
       analogWrite(pPumpSpdpwm, 1520,100);
       pumpSetting = 3;
       pumpSpeed = 1750;
-      Particle.publish("Watts", String(realPower));
+     //Particle.variable("PowerUse", String(realPower));
+     // Particle.variable("PumpRPM", pumpSpeed);
       Particle.publish("Time", Time.timeStr());
+     // Particle.publish("OAT", String(ioat));
       return 3;
    }
    if (command == "4")
@@ -441,8 +502,9 @@ day = Time.day();
      analogWrite(pPumpSpdpwm, 1850,100);
       pumpSetting = 4;
       pumpSpeed = 2000;
-      Particle.publish("Watts", String(realPower));
+      //Particle.variable("PowerUse", String(realPower));
       Particle.publish("Time", Time.timeStr());
+      //Particle.publish("OAT", String(ioat));
        return 4;
    }
    if (command == "5")
@@ -450,7 +512,7 @@ day = Time.day();
       analogWrite(pPumpSpdpwm, 2511,100);
       pumpSetting = 5;
       pumpSpeed = 2500;
-      Particle.publish("Watts", String(realPower));
+      //Particle.variable("PowerUse", String(realPower));
       Particle.publish("Time", Time.timeStr());
       return 5;
    }
@@ -459,7 +521,7 @@ day = Time.day();
      analogWrite(pPumpSpdpwm, 3172,100);
       pumpSetting = 6;
       pumpSpeed = 3000;
-      Particle.publish("Watts", String(realPower));
+    //  Particle.variable("PowerUse", String(realPower));
       Particle.publish("Time", Time.timeStr());
       return 6;
    }
@@ -468,7 +530,7 @@ day = Time.day();
      analogWrite(pPumpSpdpwm, 3972,100);
       pumpSetting = 7;
       pumpSpeed = 3450;
-      Particle.publish("Watts", String(realPower));
+    //  Particle.variable("PowerUse", String(realPower));
       Particle.publish("Time", Time.timeStr());
       return 7;
    }
@@ -477,8 +539,10 @@ day = Time.day();
      analogWrite(pPumpSpdpwm, 0,0);
       pumpSetting = 0;
       pumpSpeed = 0;
-      Particle.publish("Watts", String(realPower));
+      
+    // Particle.variable("PowerUse", String(realPower));
       Particle.publish("Time", Time.timeStr());
+      //Particle.publish("OAT", String(ioat));
       return 9;
     }
 }
@@ -498,8 +562,3 @@ int automodefunc(String command)
       return 0;
     }
 }
-
-
-
-
-
